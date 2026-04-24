@@ -24,7 +24,6 @@ jobs:
         run: |
           go install -v github.com/tomnomnom/waybackurls@latest
           echo "$HOME/go/bin" >> $GITHUB_PATH
-          waybackurls -h | head -1
 
       - name: Run waybackurls
         run: |
@@ -40,36 +39,49 @@ jobs:
           
           echo "=== waybackurls completed ==="
           echo "Total URLs found: $(wc -l < WB1.txt)"
-          echo "=== Results ==="
-          cat WB1.txt
+          echo "=== Results (first 20 lines) ==="
+          head -20 WB1.txt
+
+      - name: Compress Results
+        if: success()
+        run: |
+          # ضغط الملف لو كبير
+          gzip -c WB1.txt > WB1.txt.gz
+          ls -lh WB1.txt WB1.txt.gz
 
       - name: Send Results to Discord
         if: success()
         run: |
           HOSTS=$(wc -l < live.txt)
           URLS=$(wc -l < WB1.txt)
+          SIZE=$(du -h WB1.txt | cut -f1)
+          NOW=$(date -u '+%Y-%m-%d %H:%M UTC')
           
-          curl -X POST \
-            -H "Content-Type: multipart/form-data" \
-            -F "file=@WB1.txt" \
-            -F "payload_json={
-              \"username\": \"Wayback Bot\",
-              \"embeds\": [{
-                \"title\": \"🕒 Waybackurls Results\",
-                \"color\": 3447003,
-                \"fields\": [
-                  {\"name\": \"📥 Input Hosts\", \"value\": \"${HOSTS}\", \"inline\": true},
-                  {\"name\": \"🔗 URLs Found\", \"value\": \"${URLS}\", \"inline\": true},
-                  {\"name\": \"📎 File\", \"value\": \"WB1.txt\", \"inline\": true}
-                ],
-                \"footer\": {\"text\": \"waybackurls • $(date -u +\"%Y-%m-%d %H:%M UTC\")\"}
-              }]
-            }" \
-            ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # لو الملف أقل من 8MB, ابعته مباشرة
+          FILE_SIZE=$(stat -c%s WB1.txt)
+          MAX_SIZE=8388608  # 8MB Discord limit
+          
+          if [ "$FILE_SIZE" -lt "$MAX_SIZE" ]; then
+            echo "Sending file directly ($SIZE)..."
+            curl -X POST \
+              -H "Content-Type: multipart/form-data" \
+              -F "file=@WB1.txt" \
+              -F "payload_json={\"username\":\"Wayback Bot\",\"embeds\":[{\"title\":\"🕒 Waybackurls Results\",\"color\":3447003,\"fields\":[{\"name\":\"📥 Input Hosts\",\"value\":\"${HOSTS}\",\"inline\":true},{\"name\":\"🔗 URLs Found\",\"value\":\"${URLS}\",\"inline\":true},{\"name\":\"📦 Size\",\"value\":\"${SIZE}\",\"inline\":true}],\"footer\":{\"text\":\"waybackurls • ${NOW}\"}}]}" \
+              ${{ secrets.DISCORD_WEBHOOK_URL }}
+          else
+            echo "File too big ($SIZE), sending summary only..."
+            # ابعث summary بس + رابط الـ artifact
+            curl -X POST \
+              -H "Content-Type: application/json" \
+              -d "{\"username\":\"Wayback Bot\",\"embeds\":[{\"title\":\"🕒 Waybackurls Results\",\"description\":\"⚠️ File too large to send directly!\\n\\n📥 Input Hosts: **${HOSTS}**\\n🔗 URLs Found: **${URLS}**\\n📦 Size: **${SIZE}**\\n\\n⬇️ Download from artifact below\",\"color\":15158332,\"footer\":{\"text\":\"waybackurls • ${NOW}\"}}]}" \
+              ${{ secrets.DISCORD_WEBHOOK_URL }}
+          fi
 
       - name: Upload Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: waybackurls-results
-          path: WB1.txt
+          path: |
+            WB1.txt
+            WB1.txt.gz
